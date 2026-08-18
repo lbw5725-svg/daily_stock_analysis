@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from inspect import getattr_static
 from typing import Optional, Dict, Any, List
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -1312,6 +1313,22 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         label = str(scores["temperature_label"])
         return score, label
 
+    @staticmethod
+    def _get_chinese_strategy_plan_copy(current_time: Optional[datetime] = None) -> tuple[str, str, str]:
+        """Return Beijing-time-aware plan wording for Chinese market reviews."""
+        beijing_now = current_time or datetime.now(ZoneInfo("Asia/Shanghai"))
+        if beijing_now.hour < 12:
+            return (
+                "今日交易计划",
+                "今日交易",
+                "基于上一交易日完整行情与盘前信息，给出今日的进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件",
+            )
+        return (
+            "尾盘及下一交易日计划",
+            "尾盘及下一交易日交易",
+            "结合截至当前的盘中行情，给出尾盘及下一交易日的进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件",
+        )
+
     def _build_output_template_sections(self, review_language: str) -> str:
         """Build LLM output sections according to market data capabilities."""
         if review_language == "en":
@@ -1353,18 +1370,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             ])
             return "\n\n".join(sections)
 
+        strategy_plan_title, strategy_horizon, strategy_plan_hint = self._get_chinese_strategy_plan_copy()
+
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
-            return """### 三、板块主线
+            return f"""### 三、板块主线
 （区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
 
 ### 四、资金与情绪
 （解读成交额、涨跌停结构、市场宽度和风险偏好）
 
 ### 五、消息催化
-（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
+（结合近三日新闻，提炼真正影响{strategy_horizon}的催化或扰动）
 
-### 六、明日交易计划
-（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
+### 六、{strategy_plan_title}
+（{strategy_plan_hint}）
 
 ### 七、风险提示
 （列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）"""
@@ -1384,9 +1403,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             add_section("资金与情绪", "（仅解读已提供的成交额、涨跌停结构、市场宽度和风险偏好数据）")
         add_section(
             "消息催化",
-            "（结合近三日新闻和指数表现，提炼真正影响明日交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
+            f"（结合近三日新闻和指数表现，提炼真正影响{strategy_horizon}的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
         )
-        add_section("明日交易计划", "（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）")
+        add_section(strategy_plan_title, f"（{strategy_plan_hint}）")
         add_section("风险提示", "（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）")
         return "\n\n".join(sections)
 

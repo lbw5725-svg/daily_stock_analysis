@@ -2,6 +2,7 @@
 """Tests for market strategy blueprints."""
 
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -32,12 +33,26 @@ class TestMarketStrategyBlueprint(unittest.TestCase):
 class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
     """Validate strategy section is injected into prompt/report."""
 
-    def test_cn_prompt_contains_strategy_plan_section(self):
+    @patch(
+        "src.market_analyzer.MarketAnalyzer._get_chinese_strategy_plan_copy",
+        return_value=("今日交易计划", "今日交易", "今日计划说明"),
+    )
+    def test_cn_prompt_contains_strategy_plan_section(self, _mock_plan_copy):
         analyzer = MarketAnalyzer(region="cn")
         prompt = analyzer._build_review_prompt(MarketOverview(date="2026-02-24"), [])
 
-        self.assertIn("明日交易计划", prompt)
+        self.assertIn("今日交易计划", prompt)
+        self.assertIn("今日计划说明", prompt)
         self.assertIn("A股市场三段式复盘策略", prompt)
+
+    def test_chinese_strategy_plan_copy_uses_beijing_session(self):
+        morning = MarketAnalyzer._get_chinese_strategy_plan_copy(datetime(2026, 8, 18, 8, 30))
+        afternoon = MarketAnalyzer._get_chinese_strategy_plan_copy(datetime(2026, 8, 18, 14, 45))
+
+        self.assertEqual(morning[0], "今日交易计划")
+        self.assertIn("上一交易日完整行情", morning[2])
+        self.assertEqual(afternoon[0], "尾盘及下一交易日计划")
+        self.assertIn("截至当前的盘中行情", afternoon[2])
 
     def test_us_prompt_contains_strategy_plan_section(self):
         with patch("src.market_analyzer.get_config", return_value=SimpleNamespace(report_language="en")):
