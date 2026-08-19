@@ -1,10 +1,17 @@
 name: 每日股票分析
 
 on:
-   # 定时触发 - 每天北京时间 08:30 和 14:45
+   # 定时触发 - 工作日北京时间 08:30 和 14:45，并提供 3 次补偿触发。
+   # GitHub schedule 可能延迟或丢失；同一时段通过缓存锁只允许成功运行一次。
   schedule:
-    - cron: '30 0 * * *'       # 北京时间 08:30
-    - cron: '45 6 * * *'       # 北京时间 14:45     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '30 0 * * 1-5'     # 北京时间 08:30
+    - cron: '45 0 * * 1-5'     # 08:45 补偿
+    - cron: '0 1 * * 1-5'      # 09:00 补偿
+    - cron: '15 1 * * 1-5'     # 09:15 补偿
+    - cron: '45 6 * * 1-5'     # 北京时间 14:45
+    - cron: '0 7 * * 1-5'      # 15:00 补偿
+    - cron: '15 7 * * 1-5'     # 15:15 补偿
+    - cron: '30 7 * * 1-5'     # 15:30 补偿
   
   # 手动触发
   workflow_dispatch:
@@ -39,29 +46,78 @@ jobs:
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
     
     steps:
-      - name: 随机延迟（避免固定时间访问）
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
       - name: 检出代码
         uses: actions/checkout@v5
+
+      - name: 确定定时报告时段
+        id: schedule_slot
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "slot=manual-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "date=manual" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "${{ github.event.schedule }}" in
+            "30 0 * * 1-5"|"45 0 * * 1-5"|"0 1 * * 1-5"|"15 1 * * 1-5")
+              SLOT="morning"
+              ;;
+            *)
+              SLOT="afternoon"
+              ;;
+          esac
+          REPORT_DATE="$(TZ=Asia/Shanghai date +%F)"
+          mkdir -p .schedule-lock
+          printf '%s\n' "$REPORT_DATE/$SLOT" > .schedule-lock/slot.txt
+          echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
+          echo "date=$REPORT_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: 恢复当日时段去重锁
+        id: schedule_lock
+        if: github.event_name == 'schedule'
+        uses: actions/cache@v4
+        with:
+          path: .schedule-lock
+          key: stock-analysis-${{ steps.schedule_slot.outputs.date }}-${{ steps.schedule_slot.outputs.slot }}
+
+      - name: 判断是否需要执行
+        id: run_gate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ steps.schedule_lock.outputs.cache-hit }}" = "true" ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "本时段报告已成功执行，跳过此次补偿任务。"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "开始执行 ${{ steps.schedule_slot.outputs.date }} ${{ steps.schedule_slot.outputs.slot }} 报告。"
+          fi
+
+      - name: 随机延迟（避免固定时间访问）
+        if: steps.run_gate.outputs.should_run == 'true'
+        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 设置 Python 环境
+        if: steps.run_gate.outputs.should_run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
       
       - name: 安装依赖
+        if: steps.run_gate.outputs.should_run == 'true'
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
       
       - name: 创建必要目录
+        if: steps.run_gate.outputs.should_run == 'true'
         run: |
           mkdir -p data logs reports
       
       - name: 执行股票分析
+        if: steps.run_gate.outputs.should_run == 'true'
         env:
           # ==========================================
           # AI 配置
@@ -520,7 +576,7 @@ jobs:
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
-        if: always()
+        if: always() && steps.run_gate.outputs.should_run == 'true'
         with:
           name: analysis-reports-${{ github.run_number }}
           path: |
@@ -529,7 +585,7 @@ jobs:
           retention-days: 30
       
       - name: 显示运行结果
-        if: always()
+        if: always() && steps.run_gate.outputs.should_run == 'true'
         run: |
           echo ""
           echo "=========================================="
